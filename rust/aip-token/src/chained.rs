@@ -7,6 +7,7 @@ use biscuit_auth::{
     PublicKey as BiscuitPublicKey,
 };
 
+use crate::canonical::{format_system_time, tool_check, validate_scopes, validate_term};
 use crate::error::TokenError;
 
 /// A chained delegation token backed by a Biscuit.
@@ -38,6 +39,13 @@ impl ChainedToken {
         ttl_seconds: u64,
         keypair: &aip_core::crypto::KeyPair,
     ) -> Result<Self, TokenError> {
+        // Every caller-supplied string that becomes part of a signed block is
+        // validated before any Datalog is built. A value that closed its own
+        // term could append facts or checks to the authority block and forge
+        // scope, depth or expiry.
+        validate_term(issuer, "identity")?;
+        validate_scopes(scopes)?;
+
         // Bridge aip KeyPair -> biscuit KeyPair
         let raw_bytes = keypair.private_key_bytes();
         let biscuit_private = BiscuitPrivateKey::from_bytes(&raw_bytes, Algorithm::Ed25519)
@@ -172,6 +180,13 @@ impl ChainedToken {
         budget_cents: Option<i64>,
         context: &str,
     ) -> Result<Self, TokenError> {
+        // Same boundary validation as create_authority: these four values all
+        // land in a signed block.
+        validate_term(delegator, "delegator")?;
+        validate_term(delegate, "delegate")?;
+        validate_term(context, "context")?;
+        validate_scopes(scopes)?;
+
         // 1. Context must be non-empty.
         if context.is_empty() {
             return Err(TokenError::TokenMalformed(
@@ -396,6 +411,13 @@ impl ChainedToken {
         //    - time(2026-03-22T...)  -- current UTC time
         //    - depth(1)             -- current delegation depth
         //    - allow if tool($t)    -- the allow policy (all block checks must pass first)
+        // The requested tool is the one input to this step that the caller
+        // controls, and in an MCP binding it arrives straight from the agent's
+        // JSON-RPC params. A tool name that closed its own string could append
+        // `allow if true` to this very authorizer and pass any check the token
+        // carries.
+        validate_term(tool, "tool")?;
+
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
         let depth = self.current_depth();
 
@@ -420,40 +442,6 @@ impl ChainedToken {
 
         Ok(())
     }
-}
-
-/// Render a block's scope constraint as one self-contained check.
-///
-/// An all-exact scope set produces the Simple profile form (spec/aip-tokens.md
-/// section 7.1). A set containing a wildcard produces the Standard profile
-/// form (section 7.2), where patterns become `starts_with` clauses joined to
-/// the exact-match clause with `or`. The check MUST be self-contained: a
-/// rule-based encoding
-/// does not attenuate, because a delegation block's narrower rule is unioned
-/// with the authority block's broader rule of the same name rather than
-/// replacing it, and the broader one then satisfies the delegation's check.
-fn tool_check(scopes: &[&str]) -> String {
-    let exact: Vec<&str> = scopes.iter().filter(|s| !s.ends_with('*')).copied().collect();
-    let wildcards: Vec<&str> = scopes.iter().filter(|s| s.ends_with('*')).copied().collect();
-
-    let mut clauses: Vec<String> = Vec::new();
-    if !exact.is_empty() {
-        let items: Vec<String> = exact.iter().map(|s| format!("\"{s}\"")).collect();
-        clauses.push(format!("tool($t), [{}].contains($t)", items.join(", ")));
-    }
-    for pattern in wildcards {
-        let prefix = &pattern[..pattern.len() - 1];
-        if prefix.is_empty() {
-            clauses.push("tool($t)".to_string());
-        } else {
-            clauses.push(format!("tool($t), $t.starts_with(\"{prefix}\")"));
-        }
-    }
-
-    if clauses.is_empty() {
-        return String::new();
-    }
-    format!("check if {};\n", clauses.join(" or "))
 }
 
 /// Does a parent scope pattern permit a child scope?
@@ -526,17 +514,6 @@ fn parse_scopes(source: &str) -> Option<HashSet<String>> {
     } else {
         Some(scopes)
     }
-}
-
-/// Format a `SystemTime` as an RFC 3339 date-time string suitable for Biscuit Datalog.
-fn format_system_time(t: SystemTime) -> String {
-    let duration = t
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .expect("time before epoch");
-    let secs = duration.as_secs();
-    // Convert to a simple RFC 3339 timestamp
-    let dt = chrono::DateTime::from_timestamp(secs as i64, 0).expect("valid timestamp");
-    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 /// Extract the issuer identity and max_depth from the authority block source.

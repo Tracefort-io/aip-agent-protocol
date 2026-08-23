@@ -1,3 +1,4 @@
+pub mod canonical;
 pub mod chained;
 pub mod claims;
 pub mod compact;
