@@ -258,14 +258,23 @@ class ChainedToken:
 
     # -- verification (draft-prakash-aip-01 Section 4) ---------------------
 
-    def authorize(self, tool: str, root_public_key_bytes: bytes) -> None:
-        """Verify the chain and authorize one tool invocation.
+    def verify_chain(self, root_public_key_bytes: bytes) -> Biscuit:
+        """Verify the chain without evaluating a tool-specific policy.
 
         Runs V1 (chain integrity), V3 (depth), V4 (structural attenuation
-        walk), V5 (delegation context), and V6 (policy evaluation). V2 (root
-        binding) is the caller's responsibility: it supplies the root key it
-        resolved from the issuer's identity document. V7 (revocation) is
-        handled by the transport binding.
+        walk) and V5 (delegation context), and returns the verified Biscuit so
+        a caller can run V6 against it.
+
+        This exists for relying parties that must establish what a chain
+        conveys on a request that names no tool. An MCP proxy sees
+        `initialize` and `tools/list` as well as `tools/call`, and skipping
+        verification on those because there is no tool to check would leave
+        depth, attenuation and context unenforced for the whole session.
+
+        V2 (root binding) is the caller's responsibility: it supplies the root
+        key it resolved for the issuer this chain declares, and MUST confirm
+        that the key belongs to that issuer. V7 (revocation) is handled by the
+        transport binding.
         """
         # V1: re-verify every block signature from the serialized form. Nothing
         # below may read block content before this succeeds.
@@ -280,6 +289,16 @@ class ChainedToken:
 
         # V4 and V5
         self._attenuation_walk()
+
+        return verified
+
+    def authorize(self, tool: str, root_public_key_bytes: bytes) -> None:
+        """Verify the chain and authorize one tool invocation.
+
+        Runs V1, V3, V4, V5 via :meth:`verify_chain`, then V6 (policy
+        evaluation) for the named tool.
+        """
+        verified = self.verify_chain(root_public_key_bytes)
 
         # V6: policy evaluation. Ambient facts are tool, time and depth only.
         # Supplying a budget fact here would make any budget check evaluate

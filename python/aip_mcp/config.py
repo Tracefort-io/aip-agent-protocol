@@ -24,7 +24,14 @@ class ProxyConfig:
     upstream: str = "http://localhost:3000"
     port: int = 8080
     host: str = "127.0.0.1"
-    trust_keys: list[str] = field(default_factory=list)
+    # Either a list of encoded public keys, or a mapping of AIP issuer
+    # identifier to encoded public key. The mapping form is what lets the proxy
+    # perform step V2 (root binding): confirming that the key which verified a
+    # token is the key belonging to the issuer that token declares. With a bare
+    # list of more than one key the proxy cannot make that check, so it refuses
+    # to start rather than accept a token signed by one trusted key while it
+    # claims the identity of a different trusted issuer.
+    trust_keys: list[str] | dict[str, str] = field(default_factory=list)
 
     # Audit thresholds
     max_ttl_seconds: int = 3600
