@@ -69,16 +69,37 @@ def audit_compact(token: "CompactToken") -> AuditResult:
     return AuditResult(passed=passed, warnings=warnings, errors=errors)
 
 
-def audit_chained(token: "ChainedToken") -> AuditResult:
-    """Audit a chained (Biscuit) token for security issues."""
+def audit_chained(
+    token: "ChainedToken",
+    max_depth: int | None = None,
+    max_budget_cents: int | None = None,
+) -> AuditResult:
+    """Audit a chained (Biscuit) token for security issues.
+
+    With no limits supplied this is advisory and reports warnings only, which
+    is what it did for every caller before: nothing ever populated ``errors``,
+    so ``passed`` was unconditionally True and a caller treating this as a gate
+    was gating on nothing.
+
+    When ``max_depth`` or ``max_budget_cents`` are supplied, exceeding them is
+    an error rather than a warning, and ``passed`` becomes False. Note that
+    this is a deployment policy check layered on top of verification. It is not
+    a substitute for it: scope, attenuation, depth and expiry are enforced by
+    the verification algorithm, not here.
+    """
     warnings: list[str] = []
     errors: list[str] = []
 
     # Depth check
-    max_depth = token.max_depth()
-    if max_depth > MAX_SAFE_DEPTH:
+    declared_depth = token.max_depth()
+    if max_depth is not None and declared_depth > max_depth:
+        errors.append(
+            f"Max delegation depth {declared_depth} exceeds the configured "
+            f"limit of {max_depth}"
+        )
+    elif declared_depth > MAX_SAFE_DEPTH:
         warnings.append(
-            f"Max delegation depth {max_depth} exceeds "
+            f"Max delegation depth {declared_depth} exceeds "
             f"recommended maximum of {MAX_SAFE_DEPTH}"
         )
 
@@ -96,7 +117,13 @@ def audit_chained(token: "ChainedToken") -> AuditResult:
                     inner = line[len("budget_ceiling("):-1]
                     try:
                         cents = int(inner)
-                        if cents > HIGH_BUDGET_CENTS:
+                        if max_budget_cents is not None and cents > max_budget_cents:
+                            errors.append(
+                                f"Authority budget {cents} cents "
+                                f"(${cents / 100:.2f}) exceeds the configured "
+                                f"limit of ${max_budget_cents / 100:.2f}"
+                            )
+                        elif cents > HIGH_BUDGET_CENTS:
                             warnings.append(
                                 f"Authority budget {cents} cents "
                                 f"(${cents / 100:.2f}) exceeds recommended "

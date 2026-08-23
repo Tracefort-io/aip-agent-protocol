@@ -2,6 +2,76 @@
 
 All notable changes to AIP (Agent Identity Protocol) are documented here.
 
+## [0.5.0] - 2026-08-23
+
+### Security
+
+**The MCP auth proxy did not verify AIP tokens.** `aip_mcp/proxy.py` called
+`ChainedToken.from_base64`, which is step V1 only, and then an audit function
+whose `errors` list nothing ever wrote to, so `passed` was unconditionally
+`True`. Steps V2 through V7 never ran. A chain with an out-of-scope tool, an
+expired time check, a raised budget ceiling, an empty delegation context, or
+depth past `max_depth` was forwarded upstream as verified so long as its
+signatures chained. Anyone running `aip-proxy` should upgrade.
+
+Demonstrated against 0.4.0, with a token granting only `tool:search`:
+
+```
+tools/call name="delete_everything"  -> HTTP 200 (forwarded)
+expired chain, tools/call            -> HTTP 200 (forwarded)
+```
+
+Both now return 403 and 401 respectively.
+
+- **V6 now runs.** The proxy reads the JSON-RPC method and, for `tools/call`,
+  the tool name out of the request body, and evaluates the token's policy
+  against the tool actually being invoked. It had no way to do this before
+  because it forwarded raw HTTP without parsing MCP at all. Requests naming no
+  tool (`initialize`, `tools/list`) now get V1 through V5 via the new
+  `ChainedToken.verify_chain()`, rather than being waved through.
+- **V2 (root binding) now runs.** The proxy previously tried each configured
+  trust key until one verified, then trusted the token's self-declared
+  identity. With two trusted issuers, a token signed by one could claim the
+  identity of the other. `trust_keys` now accepts a mapping of issuer to key,
+  and the key that verified a token must be the key configured for the issuer
+  that token declares.
+- **A JSON-RPC batch invoking more than one distinct tool is refused.** One
+  policy evaluation cannot authorize two different tools.
+- **Error status codes follow Section 6.1.** `scope_insufficient`,
+  `budget_exceeded` and `depth_exceeded` return 403; the proxy previously
+  hardcoded 401 for every verification failure, telling clients to
+  re-authenticate when their credential was valid and simply insufficient.
+
+### Fixed
+
+- `audit_chained()` could never fail. It appended only to `warnings`, never to
+  `errors`, so `AuditResult.passed` was always `True` and any caller treating
+  it as a gate was gating on nothing. It now accepts `max_depth` and
+  `max_budget_cents`, and exceeding either is an error. It remains a deployment
+  policy check layered on top of verification, not a substitute for it.
+
+### Added
+
+- `ChainedToken.verify_chain()` runs V1, V3, V4 and V5 and returns the verified
+  Biscuit, for relying parties that must establish what a chain conveys on a
+  request that names no tool.
+- `aip_mcp.request.parse_mcp_request()` extracts the MCP method and tool name
+  from a JSON-RPC body.
+
+### Breaking
+
+- `trust_keys` given as a list of more than one key is now refused at startup.
+  That form cannot support V2, and it is exactly the configuration in which one
+  trusted issuer can impersonate another. Use the mapping form:
+
+  ```toml
+  [proxy.trust_keys]
+  "aip:web:example.com" = "ed25519:..."
+  ```
+
+  A single-key list still works and logs a warning that V2 is not enforced.
+- Requests the proxy previously forwarded are now correctly denied.
+
 ## [0.4.0] - 2026-08-23
 
 ### Security
