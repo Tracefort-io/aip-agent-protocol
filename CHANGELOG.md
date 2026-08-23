@@ -2,6 +2,62 @@
 
 All notable changes to AIP (Agent Identity Protocol) are documented here.
 
+## [0.4.0] - 2026-08-23
+
+### Security
+
+Two authorization bypasses, both caused by building Biscuit Datalog with string
+interpolation. Anyone running 0.3.0 or earlier should upgrade.
+
+- **Authorizer injection in `ChainedToken.authorize()`.** The requested tool name
+  was interpolated into the authorizer source. A tool name that closed its own
+  string could append an in-allowlist `tool()` fact and `allow if true`, so a
+  token granting only `tool:search` authorized any tool. This required no
+  malicious token, no forged signature and no control of the issuer, only
+  influence over the tool name being checked. In an MCP binding that name comes
+  straight from the agent's JSON-RPC `params.name`. The tool is now validated and
+  bound as a Datalog parameter rather than interpolated.
+- **Block-encoder injection in `create_authority()` and `delegate()`.** The
+  issuer, principal, scope, delegator, delegate and context values were
+  interpolated into block Datalog, so a breakout in any of them injected facts
+  into a block that was then signed. An injected `tool()` fact satisfied the
+  authority block's own scope check for any tool, an injected `time()` fact
+  defeated expiry, and an injected `max_depth()` ahead of the real one was what
+  the depth check read. All six fields are now validated at the API boundary.
+
+`aip_token.canonical.validate_term()` rejects the double quote, the backslash and
+control characters, which are the only characters that can escape a Datalog
+string context. Semicolons, parentheses, brackets, commas, `//`, spaces, colons
+and non-ASCII characters remain valid, so ordinary identifiers and free-form
+context strings are unaffected.
+
+### Fixed
+
+- `SimplePolicy.to_datalog()` emitted `check if budget($b), $b <= N` and
+  `check if depth($d), $d <= N` in both the Python and Rust SDKs. Section 3.4.1
+  of draft-prakash-aip-01 requires these as the facts `budget_ceiling(N)` and
+  `max_depth(N)`, and states that implementations MUST NOT emit a check over
+  budget: such a check binds to whatever budget facts are in scope at evaluation
+  rather than to the block's own ceiling, so it either rejects valid chains or
+  passes unconditionally. Both dimensions are verified structurally in step V4.
+  The chained-token builders were already correct; only `SimplePolicy` was wrong.
+
+### Changed
+
+- The canonical Section 3.4.1 encoding now lives in one module per language
+  (`aip_token.canonical`, `aip_token::canonical`). It had been implemented twice
+  in each SDK, which is how `SimplePolicy` drifted from the chained builder.
+- New cross-language conformance vectors compare the Rust and Python renderings
+  byte for byte, and both SDKs now carry regression tests for the two bypasses.
+
+### Breaking
+
+- `SimplePolicy.to_datalog()` output has changed. It now emits the canonical
+  Section 3.4.1 form. Callers embedding the old output in their own Datalog
+  should re-render.
+- Identifiers, scopes and context strings containing a double quote, a backslash
+  or control characters are now rejected with `token_malformed`.
+
 ## [0.3.0] - 2026-05-08
 
 ### Added

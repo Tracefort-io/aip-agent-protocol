@@ -20,12 +20,20 @@ from biscuit_auth import (
     BiscuitBuilder,
     BlockBuilder,
     Fact,
+    Policy,
     PrivateKey as BiscuitPrivateKey,
     PublicKey as BiscuitPublicKey,
     Rule,
 )
 
 from aip_core.crypto import KeyPair
+from aip_token.canonical import (
+    int_fact,
+    str_fact,
+    time_check,
+    tool_check,
+    validate_term,
+)
 from aip_token.error import TokenError
 
 # biscuit-python >= 0.4 requires an Algorithm argument for from_bytes();
@@ -53,44 +61,8 @@ def _biscuit_public_key(raw_bytes: bytes) -> BiscuitPublicKey:
 
 
 
-# --- Canonical block encoding (draft-prakash-aip-01 Section 3.4.1) ----------
-
-_STR_FACT = "{name}(\"{value}\");\n"
-
-
-def _scope_list(scopes: list[str]) -> str:
-    """Render a scope allowlist as a Datalog set literal."""
-    return ", ".join(f'"{s}"' for s in scopes)
-
-
-def _tool_check(scopes: list[str]) -> str:
-    """Render a block's scope constraint as one self-contained check.
-
-    An all-exact scope set produces the Simple profile form (spec/aip-tokens.md
-    section 7.1). A set containing a wildcard produces the Standard profile
-    form (section 7.2), where patterns become `starts_with` clauses joined to
-    the exact-match clause with `or`. The check MUST be self-contained: a
-    rule-based encoding
-    does not attenuate, because a delegation block's narrower rule is unioned
-    with the authority block's broader rule of the same name rather than
-    replacing it, and the broader one then satisfies the delegation's check.
-    """
-    exact = [s for s in scopes if not s.endswith("*")]
-    wildcards = [s for s in scopes if s.endswith("*")]
-
-    clauses = []
-    if exact:
-        clauses.append(f"tool($t), [{_scope_list(exact)}].contains($t)")
-    for pattern in wildcards:
-        prefix = pattern[:-1]
-        if prefix:
-            clauses.append(f'tool($t), $t.starts_with("{prefix}")')
-        else:
-            clauses.append("tool($t)")
-
-    if not clauses:
-        return ""
-    return "check if " + " or ".join(clauses) + ";\n"
+# Canonical block encoding lives in aip_token.canonical so that the chained
+# builder and the standalone SimplePolicy renderer cannot drift apart.
 
 
 def _covers(pattern: str, scope: str) -> bool:
@@ -207,17 +179,17 @@ class ChainedToken:
 
         expiry = datetime.now(tz=timezone.utc) + timedelta(seconds=ttl_seconds)
 
-        facts = _STR_FACT.format(name="identity", value=issuer)
+        facts = str_fact("identity", issuer)
         if principal is not None:
-            facts += _STR_FACT.format(name="principal", value=principal)
+            facts += str_fact("principal", principal)
         for scope in scopes:
-            facts += _STR_FACT.format(name="right", value=scope)
-        facts += f"max_depth({max_depth});\n"
+            facts += str_fact("right", scope)
+        facts += int_fact("max_depth", max_depth)
         if budget_cents is not None:
-            facts += f"budget_ceiling({budget_cents});\n"
+            facts += int_fact("budget_ceiling", budget_cents)
         if scopes:
-            facts += _tool_check(scopes)
-        facts += f'check if time($t), $t <= {expiry.strftime("%Y-%m-%dT%H:%M:%SZ")};\n'
+            facts += tool_check(scopes)
+        facts += time_check(expiry)
 
         biscuit = BiscuitBuilder(facts).build(_biscuit_private_key(keypair))
         return ChainedToken(biscuit, issuer, max_depth, keypair.public_key_bytes(), depth=0)
@@ -265,15 +237,15 @@ class ChainedToken:
                     "budget_exceeded",
                 )
 
-        block = _STR_FACT.format(name="delegator", value=delegator)
-        block += _STR_FACT.format(name="delegate", value=delegate)
-        block += _STR_FACT.format(name="context", value=context)
+        block = str_fact("delegator", delegator)
+        block += str_fact("delegate", delegate)
+        block += str_fact("context", context)
         if principal is not None:
-            block += _STR_FACT.format(name="principal", value=principal)
+            block += str_fact("principal", principal)
         if budget_cents is not None:
-            block += f"budget_ceiling({budget_cents});\n"
+            block += int_fact("budget_ceiling", budget_cents)
         if scopes:
-            block += _tool_check(scopes)
+            block += tool_check(scopes)
 
         new_biscuit = self._biscuit.append(BlockBuilder(block))
         return ChainedToken(
@@ -312,15 +284,26 @@ class ChainedToken:
         # V6: policy evaluation. Ambient facts are tool, time and depth only.
         # Supplying a budget fact here would make any budget check evaluate
         # against verifier-chosen data; budget is handled in V4.
+        #
+        # The requested tool is the one input to this step that the caller
+        # controls, and in an MCP binding it arrives straight from the agent's
+        # JSON-RPC params. It is validated and then bound as a Datalog
+        # parameter, never interpolated into the source: a tool name that
+        # closed its own string could append `allow if true` to this very
+        # authorizer and pass any check the token carries.
+        validate_term(tool, "tool")
+
         now = datetime.now(tz=timezone.utc)
-        auth_code = (
-            f'tool("{tool}");\n'
-            f'time({now.strftime("%Y-%m-%dT%H:%M:%SZ")});\n'
-            f"depth({self._depth});\n"
-            f'allow if tool("{tool}");\n'
-        )
         try:
-            AuthorizerBuilder(auth_code).build(verified).authorize()
+            builder = AuthorizerBuilder(
+                f'time({now.strftime("%Y-%m-%dT%H:%M:%SZ")});\n'
+                f"depth({self._depth});\n"
+            )
+            builder.add_fact(Fact("tool({t})", {"t": tool}))
+            builder.add_policy(Policy("allow if tool({t})", {"t": tool}))
+            builder.build(verified).authorize()
+        except TokenError:
+            raise
         except Exception as exc:
             raise TokenError(f"insufficient scope: {exc}", "scope_insufficient") from exc
 

@@ -26,7 +26,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "agent-identity-protocol>=0.2.0",
+    "agent-identity-protocol>=0.4.0",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,6 @@
 use std::time::{Duration, SystemTime};
-use chrono::{DateTime, Utc};
+
+use crate::canonical::{int_fact, time_check, tool_check};
 
 /// Simple policy profile -- generates canonical Datalog from user-specified values.
 /// Budget is in integer cents (Biscuit Datalog has no float type).
@@ -18,33 +19,36 @@ pub enum PolicyProfile {
 }
 
 impl SimplePolicy {
-    /// Generate canonical Datalog. These templates are normative per the AIP spec.
-    /// Implementations MUST generate exactly these patterns.
+    /// Generate canonical Datalog in the forms and order mandated by
+    /// draft-prakash-aip-01 Section 3.4.1: `max_depth` and `budget_ceiling` as
+    /// facts, then the self-contained tool check, then the expiry check.
+    ///
+    /// Depth and budget are facts, not checks. Section 3.4.1 states that
+    /// implementations MUST NOT emit a check statement over budget, because such
+    /// a check binds to whatever budget facts are in scope at evaluation rather
+    /// than to this block's ceiling. Both dimensions are verified structurally in
+    /// step V4 of Section 4 instead. See [`crate::canonical`].
     pub fn to_datalog(&self) -> String {
-        let mut rules = Vec::new();
+        let mut out = String::new();
 
-        if !self.tools.is_empty() {
-            let tool_list = self.tools.iter()
-                .map(|t| format!("\"{}\"", t))
-                .collect::<Vec<_>>()
-                .join(", ");
-            rules.push(format!("check if tool($tool), [{}].contains($tool);", tool_list));
+        if let Some(depth) = self.max_depth {
+            out.push_str(&int_fact("max_depth", i64::from(depth)));
         }
 
         if let Some(cents) = self.budget_cents {
-            rules.push(format!("check if budget($b), $b <= {};", cents));
+            out.push_str(&int_fact("budget_ceiling", cents));
         }
 
-        if let Some(depth) = self.max_depth {
-            rules.push(format!("check if depth($d), $d <= {};", depth));
+        if !self.tools.is_empty() {
+            let refs: Vec<&str> = self.tools.iter().map(String::as_str).collect();
+            out.push_str(&tool_check(&refs));
         }
 
         if let Some(ttl) = self.ttl_seconds {
-            let expiry: DateTime<Utc> = (SystemTime::now() + Duration::from_secs(ttl)).into();
-            rules.push(format!("check if time($t), $t <= {};", expiry.format("%Y-%m-%dT%H:%M:%SZ")));
+            out.push_str(&time_check(SystemTime::now() + Duration::from_secs(ttl)));
         }
 
-        rules.join("\n")
+        out
     }
 }
 
