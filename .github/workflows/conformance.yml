@@ -51,6 +51,13 @@ jobs:
         working-directory: python
         run: python -m pytest tests/ -v --ignore=tests/test_aip_agents/
 
+      - name: aip-agents tests
+        # Otherwise these only run at publish time, and a broken test sat on master unnoticed.
+        working-directory: python
+        run: |
+          pip install -e aip_agents[dev]
+          python -m pytest tests/test_aip_agents/ -v
+
       - name: Rust tests
         working-directory: rust
         run: cargo test
