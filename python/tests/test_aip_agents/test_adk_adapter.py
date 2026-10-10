@@ -32,7 +32,7 @@ def test_register_walks_sub_agents():
     plugin = AIPAdkPlugin(AIPConfig(app_name="test-app"))
     sub1 = MockAgent(name="summarizer", tools=[MockTool("summarize")])
     sub2 = MockAgent(name="translator", tools=[MockTool("translate")])
-    root = MockAgent(name="coordinator", tools=[MockTool("route")], sub_agents=[sub1, sub2])
+    root = MockAgent(name="coordinator", tools=[MockTool("route"), MockTool("summarize"), MockTool("translate")], sub_agents=[sub1, sub2])
     runner = MockRunner(agent=root)
     plugin.register(runner)
     assert plugin.identity_manager.get("coordinator") is not None
